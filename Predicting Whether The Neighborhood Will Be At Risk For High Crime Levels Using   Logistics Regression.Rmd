@@ -1,0 +1,448 @@
+---
+title: "Predicting Whether The Neighborhood Will Be At Risk For High Crime Levels Using
+  Logistics Regression"
+author: "Umer Farooq"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(glmnet)
+library(Hmisc)
+library(psych)
+library(pROC)
+library(caret)
+library(devtools)
+library(ggbiplot)
+library(nnet)
+library(MASS)
+library(faraway)
+library(corrplot)
+```
+
+## **INTRODUCTION:**
+
+In this homework assignment, you will explore, analyze and model a data set containing information on crime for various neighborhoods of a major city. Each record has a response variable indicating whether or not the crime rate is above the median crime rate (1) or not (0).
+
+Your objective is to build a binary logistic regression model on the training data set to predict whether the neighborhood will be at risk for high crime levels. You will provide classifications and probabilities for the evaluation data set using your binary logistic regression model. You can only use the variables given to you (or variables that you derive from the variables provided).
+
+## **DATA EXPLORATION:**
+
+### **Loading The Training Data set:**
+
+The following code chunk load the training data set from the github repository where the data file is stored:
+
+```{r warning=FALSE, message=FALSE}
+training <- read_csv('https://raw.githubusercontent.com/Umerfarooq122/predicting-whether-the-neighborhood-will-be-at-risk-for-high-crime-levels-using-logistic-regression/main/crime-training-data_modified.csv')
+```
+
+Let's display the first few rows of data set to check if we have the data set loaded correctly:
+
+```{r}
+knitr::kable(head(training))
+```
+
+Let's quickly peek into the number of observation and variable we have available in the training data set.
+
+```{r}
+dim(training)
+```
+
+We have in total 13 columns available out of which 12 columns are independent variable and one column by the name of `target` is the dependent or the target variable. The data set contains 466 observations in its raw form. Before moving on to processing the data set let's get and in overview of all the column in a descriptive summary section. 
+
+### **Descriptive Summary Statistics:**
+
+Let's dive into thew summary statistics of the all the varaible we have in the data set. Below code chunk shows us the summary of each column.
+
+
+```{r}
+knitr::kable(describe(training))
+```
+
+From the summary above with the help of `describe()` function we can see the min, max, median, standard deviation and skewness of each column. Alongside that we also get a generic idea about the type of data. If we look at columns like `target` and `chas` we clearly see that they are represented as int type but in actual those are factor data type which needs to be corrected later at some stage. 
+
+Now let's look at the distribution of each variable in the data set using histogram. Since we got 12 independent columns/variables so it will be tedious to look at each one of them separately so I will try to plot all the histogram together and get a holistic view of entire data set.
+
+
+```{r warning=FALSE,message=FALSE}
+training_long <- training %>%                          # Apply pivot_longer function
+  pivot_longer(colnames(training)) %>% 
+  as.data.frame()
+ggp1 <- ggplot(training_long, aes(x = value)) +    # Draw each column as histogram
+  geom_histogram() + 
+  facet_wrap(~ name, scales = "free")+theme_bw()
+ggp1
+
+```
+
+
+The distribution does not look very ideal. Most of the variable have skewed distribution with outliers. Let confirm the outliers with the box plot of all the variable. I will try to plot all the variable against our `target` variable and see if the variable would be a good predictor or no. Let's look at the first four variables:
+
+```{r}
+# Define the variables for the box plots
+variables <-c("zn","indus","chas","nox")
+ 
+# Set up the plotting layout
+par(mfrow = c(1, length(variables)))
+ 
+# Create the box plots
+for (var in variables) {
+  boxplot(get(var) ~ target, data = training,
+          main = paste("Box Plot of", var),
+          xlab = "Target",
+          ylab = var,
+          col = "skyblue",
+          border = "black",
+          notch = FALSE,
+          notchwidth = 0.5,
+          medcol = "white",
+          whiskcol = "black",
+          boxwex = 0.5,
+          outpch = 19,
+          outcol = "black")
+}
+ 
+# Reset the plotting layout
+#par(mfrow = c(1, 1))
+```
+
+
+As we can see that variable `chas` might not be that useful in terms of predicting the `target` so we can easily ignore that in the upcoming models.Let's check the next four columns
+
+```{r}
+variables <-c('rm','age','dis','rad')
+ 
+# Set up the plotting layout
+par(mfrow = c(1, length(variables)))
+ 
+# Create the box plots
+for (var in variables) {
+  boxplot(get(var) ~ target, data = training,
+          main = paste("Box Plot of", var),
+          xlab = "Target",
+          ylab = var,
+          col = "skyblue",
+          border = "black",
+          notch = FALSE,
+          notchwidth = 0.5,
+          medcol = "white",
+          whiskcol = "black",
+          boxwex = 0.5,
+          outpch = 19,
+          outcol = "black")
+}
+ 
+# Reset the plotting layout
+par(mfrow = c(1, 1))
+```
+
+Apart from a lot of outlier is `dis`, `age`, and `rm` everything looks okay-ish. We already had an idea about outliers and skewness when we were dealing with histograms. let do the plotof final four columns:
+
+```{r}
+variables <-c('tax','ptratio','lstat','medv')
+ 
+# Set up the plotting layout
+par(mfrow = c(1, length(variables)))
+ 
+# Create the box plots
+for (var in variables) {
+  boxplot(get(var) ~ target, data = training,
+          main = paste("Box Plot of", var),
+          xlab = "Target",
+          ylab = var,
+          col = "skyblue",
+          border = "black",
+          notch = FALSE,
+          notchwidth = 0.5,
+          medcol = "white",
+          whiskcol = "black",
+          boxwex = 0.5,
+          outpch = 19,
+          outcol = "black")
+}
+ 
+# Reset the plotting layout
+par(mfrow = c(1, 1))
+```
+
+So the plots look good. let's check out on if there are any missing values in the data set that needs to be imputed.
+
+```{r}
+knitr::kable(colSums(is.na(training)))
+```
+
+Thankfully there are no missing values in the data set which is in itself a big relief. Before we jump into the data preparation let's check one last thing and that is multi-colinearity. Let's check the colinearity among the variables:
+
+```{r}
+cor_matrix <- round(cor(training),2)
+```
+
+```{r}
+corrplot(cor_matrix, method = "color")
+```
+
+
+As we can see that a lot of variables have correlation between them, for instance, `indus` has strong correlation with `nox`,`age`,`rad`,`tax` e.t.c which may cause multi co-linearity so we have to fix that too in our data preparation section.
+
+
+## **DATA PREPARATION:**
+
+### **Fixing Outliers:**
+
+In our data exploration we saw that columns like `indus` and `dis` has outliers so let's fix that first:
+
+```{r message=FALSE, warning=FALSE}
+attach(training)
+training <- training[-c(3)]
+training <- training[-which(target==0 & indus > 20),]
+training <- training[-which(target==0 & dis > 11),]
+training <- training[-which(target==1 & dis > 7.5),]
+#detach(train)
+```
+
+In the process of imputing outliers we did lose some observations and we can confirm it by:
+
+```{r}
+dim(training)
+```
+
+We can also fix other columns too but I'm afraid we might lose valuable observations in the process so I will leave those columns as is. 
+
+The second problem that we found in the data set during our data exploration is that there was multi co-linearity among the variable and that could easily effect our final outcome using logistics regression models. In order to deal with mutli co-linearity we will carry out Principal Components Analysis (PCA). 
+
+### **Principal Component Analysis:**
+
+Principal Component Analysis (PCA) is a dimensionality reduction technique and a powerful tool used in various fields, including statistics, machine learning, and data analysis.It will not only help us to mitigate multi co-linearity but will also helps us in reducing the number of features used in the models too (feature engineering). Below code chunk will create the principal components for the columns
+
+
+```{r}
+pc <- prcomp(training[-12],
+             center = TRUE,
+             scale. = TRUE)
+```
+
+we can check all the principal components by simply printing them:
+
+```{r}
+print(pc)
+```
+
+We can check the summary of all the principal components too.
+
+```{r}
+summary(pc)
+```
+The most significant thing to look at the om the summary of principal components is the `Proportion of Variance` which shows the total variance in the data explained or represented by each component. For example Proportion of variance for PC1 is .5518 which means that PC1 accounts for 55.18% of variance in the data. Components up-to PC5 accounts for 90% of variance in the data which should be more than enough to create a model. We can also create scree plot to see how PCs are:
+
+```{r}
+plot(pc, type = 'lines')
+```
+
+We can also check the correlayion among the PCs now:
+
+```{r}
+pairs.panels(pc$x,
+             gap = 0,
+             bg = c('red','yellow','blue')[training$target],
+             pch = 21)
+```
+
+As expected there is zero correlation among PCs which accounts for multi co-linearity. We can also check out the biplot as shown below
+
+```{r}
+g <- ggbiplot(pc,
+              obs.scale = 1,
+              var.scale = 1,
+              groups = training$target,
+              ellipse = TRUE,
+              ellipse.prob = .75)
+
+g+theme_bw()
+```
+
+At this point with PCs and imputing some outliers we are confident enough to create models and evaluate their performance:
+
+## **BUILD MODELS**
+
+Before creating models let predict all the PCs values. 
+
+```{r}
+trg <- predict(pc, training[-12])
+
+```
+
+```{r}
+trg <-data.frame(trg, training[12])
+```
+
+```{r}
+knitr::kable(head(trg))
+```
+
+After getting all the PCs now we can change the data type of `target` column from numeric to factor as shown below:
+
+```{r}
+
+trg$target <- as.factor(training$target)
+trg$target <- relevel(trg$target, ref = "0")
+```
+
+### **Model 1:**
+
+In our first model we use first 6 PCs which accounts for approx 92% variation in the data. We will also use cross validation since we are using the training data in its entirety to create model so its better to go with techniques like cross validation.
+
+```{r}
+set.seed(121)
+split <- createDataPartition(trg$target, p=0.80, list=FALSE)
+partial_train <- trg[split, ]
+validation <- trg[ -split, ]
+modcv6 <- train(target ~PC1+PC2+PC3+PC4+PC5+PC6, data = partial_train, 
+              method = "glm", family = "binomial",
+              trControl = trainControl(
+                  method = "cv", number = 10,
+                  savePredictions = TRUE),
+              tuneLength = 5, 
+              preProcess = c("center", "scale"))
+
+```  
+
+### **Model 2:**
+
+Let's create another model only first 4 PCs
+
+```{r}
+
+modcv4 <- train(target ~PC1+PC2+PC3+PC4, data = partial_train, 
+              method = "glm", family = "binomial",
+              trControl = trainControl(
+                  method = "cv", number = 10,
+                  savePredictions = TRUE),
+              tuneLength = 5, 
+              preProcess = c("center", "scale"))
+```
+
+### **Model 3:**
+
+Model with only first 2 PCs
+
+```{r}
+
+modcv2 <- train(target ~PC1+PC2, data = partial_train, 
+              method = "glm", family = "binomial",
+              trControl = trainControl(
+                  method = "cv", number = 10,
+                  savePredictions = TRUE),
+              tuneLength = 5, 
+              preProcess = c("center", "scale"))
+```
+
+### **Model 4:**
+
+Model with all PCs
+
+```{r}
+
+modcv <- train(target ~., data = partial_train, 
+              method = "glm", family = "binomial",
+              trControl = trainControl(
+                  method = "cv", number = 10,
+                  savePredictions = TRUE),
+              tuneLength = 5, 
+              preProcess = c("center", "scale"))
+```
+
+## **MODEL SELECTION:**
+
+### **Selecting Models Based on Classification Metrics:**
+
+Now our models are and it is the time to pick the best one. We will tryp to look at different metrics like accuracy, classification error rate, precision, sensitivity, specificity, F1 score, AUC, and confusion matrix
+
+```{r}
+preds1 <- predict(modcv6, newdata = validation)
+preds2 <- predict(modcv4, newdata = validation)
+preds3 <- predict(modcv2, newdata = validation)
+preds4 <- predict(modcv, newdata = validation)
+m1<- confusionMatrix(preds1, validation$target, 
+                        mode = "everything")
+m2<- confusionMatrix(preds2, validation$target, 
+                        mode = "everything")
+m3 <- confusionMatrix(preds3, validation$target, 
+                        mode = "everything")
+m4 <- confusionMatrix(preds4, validation$target, 
+                        mode = "everything")
+par(mfrow=c(2,2))
+fourfoldplot(m1$table, color = c("gray", "blue"), main="Model 1")
+fourfoldplot(m2$table, color = c("gray", "blue"), main="Model 2")
+fourfoldplot(m3$table, color = c("gray", "blue"), main="Model 3")
+fourfoldplot(m4$table, color = c("gray", "blue"), main="Model 4")
+```
+
+Surprisingly Model 3 which is based on only two PCs performs better than Model 1 and Model 2 when comes to confusion matrix. Let's look at other metrics too.
+
+```{r}
+eval <- data.frame(m1$byClass, 
+                   m2$byClass, 
+                   m3$byClass, 
+                   m4$byClass)
+eval <- data.frame(t(eval))
+
+eval <- dplyr::select(eval, Sensitivity, Specificity, Precision, Recall, F1)
+row.names(eval) <- c("Model 1", "Model 2", "Model 3", "Model 4")
+knitr::kable(eval)
+```
+
+Again Model 3 which is based on only two PCs out performs Model 1 and Model 2. Similarly looking at the ROC/AUC curves
+
+```{r warning=FALSE, message=FALSE}
+getROC <- function(model) {
+    name <- deparse(substitute(model))
+    pred.prob1 <- predict(model, newdata = trg, type="prob")
+    p1 <- data.frame(pred = trg$target, prob = pred.prob1[[1]])
+    p1 <- p1[order(p1$prob),]
+    rocobj <- roc(p1$pred, p1$prob)
+    plot(rocobj, asp=NA, legacy.axes = TRUE, print.auc=TRUE,
+         xlab="Specificity", main = name)
+}
+par(mfrow=c(2,2))
+getROC(modcv6)
+getROC(modcv4)
+getROC(modcv2)
+getROC(modcv)
+```
+
+Similarly, `modcv2` which is our Model 3 has a good ROC curve where AUC is .955 which is very close to 1. The reason why we are skipping Model 4 is that it utilizes all of the PCs to give prediction which could be costly in terms of computing power and time.
+Looking at all the circumstances we will go with Model 3 as our final model to predict.
+
+### **Making Predictions:**
+
+Finally, we can make our final predictions. We can see from the head of our final dataframe and the table output of our predicted variable class that the prediction distribution looks very similar to that of our initial test distribution.  Let's load the testing data set:
+
+```{r message=FALSE, warning=FALSE}
+testing <- read_csv("https://raw.githubusercontent.com/Umerfarooq122/predicting-whether-the-neighborhood-will-be-at-risk-for-high-crime-levels-using-logistic-regression/main/crime-evaluation-data_modified.csv")
+```
+
+```{r}
+test <- predict(pc, testing)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+finalpreds <- predict(modcv2, test)
+finalpreds.probs <- predict(modcv2, test, type="prob")
+finaldf <- cbind(finalpreds.probs, prediction=finalpreds)
+write.csv(finaldf, 'HW3_prediction.csv', row.names = FALSE)
+knitr::kable(head(finaldf))
+knitr::kable(table(finaldf$prediction))
+```
+
+## **Conclusion:**
+
+In this particular we applied a binary logistic regression model to predict the `target` variable for the testing data. We trained our model using training data. First we explored the data in training data set and we imputed some outliers. After that we encounter multi co-linearity among the independent variable using principal component analysis (PCA). When the data was ready with all the PCs then we formulated a few models followed by section of models based on classification model metrics. We ended up picking the model with only two PCAs which performed well on training data set. When model was finalized then it was applied to testing data to predict the `target`.
+
+## **Appendix:**
